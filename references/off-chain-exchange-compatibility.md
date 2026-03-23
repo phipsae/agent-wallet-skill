@@ -57,20 +57,75 @@ Order {
 
 ### Possible approaches
 
-**A. ERC-7739 session key (ideal, unproven)**
-Use Rhinestone's `erc7739Policies` to let the session key sign Polymarket Order typed data on behalf of the Safe. Polymarket verifies via `isValidSignature()` (signatureType 3, POLY_1271). Funds stay in Safe, on-chain policy enforcement. But: erc7739Policies may not be production-ready, and Polymarket's POLY_1271 support with arbitrary Safes is untested.
+**A. ERC-7739 session key (ideal, blocked)**
+Use Rhinestone's `erc7739Policies` to let the session key sign Polymarket Order typed data on behalf of the Safe. Polymarket verifies via `isValidSignature()` (signatureType 3, POLY_1271). Funds stay in Safe, on-chain policy enforcement. **Currently blocked** — see research findings below.
 
 **B. Dedicated EOA (pragmatic, works today)**
-Session key transfers USDC to a dedicated agent EOA. Agent uses that EOA directly with Polymarket's SDK (signatureType 0). Spending cap = transfer limit. But funds leave the Safe.
+Session key transfers USDC to a dedicated agent EOA. Agent uses that EOA directly with Polymarket's SDK (signatureType 0). Spending cap = transfer limit. But funds leave the Safe. **This is the only proven path today.**
 
 **C. Safe as Polymarket wallet (partially proven)**
-Polymarket already uses 1-of-1 Gnosis Safes for browser users (signatureType 2). A `turnkey-safe-builder-example` repo exists for programmatic Safe-based trading. The Safe itself would be the Polymarket maker address. But: may require Polymarket's specific Safe deployment pattern, and the agent would need signing authority (violates "agent never owner" unless ERC-7739 works).
+Polymarket already uses 1-of-1 Gnosis Safes for browser users (signatureType 2). A `turnkey-safe-builder-example` repo exists for programmatic Safe-based trading. The Safe itself would be the Polymarket maker address. But: signatureType 2 requires Polymarket's specific Safe factory (`getSafeAddress(signer)` derivation check). The agent would need signing authority (violates "agent never owner" unless ERC-7739 works).
 
-### Open questions
+### Research findings (March 2026)
 
-1. Does Rhinestone's SmartSessions implement `erc7739Policies` today?
-2. Does Polymarket's POLY_1271 work with arbitrary Safes or only Polymarket-deployed ones?
-3. Are Rhinestone module contracts deployed on Polygon?
+#### 1. Does Rhinestone's SmartSessions implement `erc7739Policies` today?
+
+**Code exists, but not production-ready.** The SmartSessions contract (v1.0.0, `0x00000000008bDABA73cD9815d79069c247Eb4bDA`) includes `SmartSessionERC7739` with full `isValidSignatureWithSender()` logic — checks permissionId, validates ERC-7739 content against an allow-list, enforces erc1271Policies, and validates the session key signature.
+
+However:
+- **Open bug** ([PR #177](https://github.com/erc7579/smartsessions/pull/177), since Oct 2025, unmerged): the ERC-1271 code path passes the full signature to both the policy and the validator, which breaks with standard validators like OwnableValidator. The fix separates `policyData` from `validatorSignature` but has not shipped.
+- **Zero non-empty usage**: every SDK tutorial, demo, and example passes `{ allowedERC7739Content: [], erc1271Policies: [] }`. No tutorial or example demonstrates signing off-chain typed data through the ERC-7739 path.
+- **Docs say "experimental"**: Rhinestone marks Smart Sessions as "experimental, expect breaking changes."
+- **Only test**: a synthetic Foundry unit test (`SmartERC1271.t.sol`) with a dummy `Permit` struct.
+
+**Verdict: hard blocker.** The architecture is sound but the implementation is buggy and unproven. Likely 6-12 months from production readiness.
+
+#### 2. Does Polymarket's POLY_1271 work with arbitrary Safes?
+
+**Yes, at the on-chain contract level — no whitelist, no factory check.** The `verifyPoly1271Signature` function in [Signatures.sol](https://github.com/Polymarket/ctf-exchange/blob/main/src/exchange/mixins/Signatures.sol) checks exactly three things:
+
+```solidity
+(signer == maker) && maker.code.length > 0
+    && SignatureCheckerLib.isValidSignatureNow(maker, hash, signature)
+```
+
+No factory derivation, no registry. Compare with signatureType 2 (`POLY_GNOSIS_SAFE`), which calls `getSafeAddress(signer) == safeAddress` to verify the Safe was deployed through Polymarket's factory. Type 3 has no such restriction. The test (`ERC1271Signature.t.sol`) confirms this with a bare-bones mock contract — not a Polymarket-deployed Safe.
+
+The same logic applies to the Neg Risk Exchange (`NegRiskCtfExchange` inherits `CTFExchange`).
+
+**Client-side gap**: none of the official SDKs (TypeScript, Python, Rust) expose signatureType 3 in their enums — they stop at 2. The CLOB API server is closed-source, so it is unknown whether it accepts type 3 orders. Integration would require forking the SDK and testing against the API.
+
+**Verdict: promising but untested end-to-end.** The on-chain path is open; the off-chain API path is unknown.
+
+#### 3. Are Rhinestone module contracts deployed on Polygon?
+
+**Yes, fully deployed.** Rhinestone's [supported chains page](https://docs.rhinestone.dev/home/resources/supported-chains) lists Polygon (chain 137). All contracts verified on Polygonscan via CREATE2 (same addresses as Base/mainnet):
+
+| Contract | Address | On Polygon? |
+|----------|---------|-------------|
+| SmartSessions | `0x00000000008bDABA73cD9815d79069c247Eb4bDA` | Yes |
+| SpendingLimitsPolicy | `0x000000000033212E272655D8a22402Db819477A6` | Yes |
+| TimeFramePolicy | `0x0000000000D30f611fA3bf652ac6879428586930` | Yes |
+| UniActionPolicy | `0x0000000000714Cf48FcF88A0bFBa70d313415032` | Yes |
+| Module Registry | `0x000000000069E2a187AEFFb852bF3cCdC95151B2` | Yes (142 txns) |
+| Safe7579 Adapter | `0x7579f2AD53b01c3D8779Fe17928e0D48885B0003` | Yes |
+| Safe v1.4.1 (L2) | `0x29fcb43b46531bca003ddc8fcb67ffe91900c762` | Yes |
+| EntryPoint v0.7 | `0x0000000071727De22E5E9d8BAf0edAc6f37da032` | Yes (~8M txns) |
+| Pimlico bundler | Operational on Polygon | Yes |
+
+Near-zero usage on Polygon policy contracts though — ecosystem activity is concentrated on Base and Ethereum mainnet.
+
+**Verdict: not a blocker.** Infrastructure is in place.
+
+### Summary
+
+| Question | Answer | Blocker? |
+|----------|--------|----------|
+| erc7739Policies works? | No — buggy, unmerged fix, zero production use | **Hard blocker** |
+| POLY_1271 accepts any Safe? | Yes on-chain, unknown at CLOB API | Needs testing |
+| Rhinestone on Polygon? | Fully deployed | Not a blocker |
+
+The single hard blocker is Rhinestone's `erc7739Policies`. Until that bug is fixed and shipped, a session key cannot sign Polymarket orders on behalf of the Safe. The dedicated EOA approach (Option B) remains the only proven path.
 
 ---
 
