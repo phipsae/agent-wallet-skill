@@ -27,7 +27,8 @@ Permission (session creation only — does NOT execute):
 Execution (uses existing session — never creates one silently):
 - "swap", "trade", "exchange", "buy WETH", "sell USDC" → `uniswap-swap`
 - "send <TOKEN>", "transfer <TOKEN> to" → `transfer:<TOKEN>` (e.g. `transfer:USDC`)
-- "supply", "deposit", "yield", "earn", "lend", "aave" → `aave-supply`
+- "supply", "deposit", "yield", "earn", "lend", "supply to aave" → `aave-supply`
+- "withdraw", "withdraw from aave", "redeem", "remove from aave", "pull out" → `aave-withdraw`
 
 Info: "check balance", "how much", "what's in my wallet" → balance check
 Revoke: "revoke", "remove access", "disable session" → revocation
@@ -290,7 +291,7 @@ import {
   getSmartSessionsValidator,
 } from "@rhinestone/module-sdk";
 import { chain, rpcUrl } from "./config.js";
-import { requestBrowserSignature } from "./browser-signer.js";
+import { requestBrowserSignature, type SessionMeta } from "./browser-signer.js";
 
 export const SAFE_4337_MODULE = "0x7579EE8307284F293B1927136486880611F20002" as Address;
 export const SAFE_LAUNCHPAD = "0x7579011aB74c46090561ea277Ba79D510c6C00ff" as Address;
@@ -313,7 +314,7 @@ export async function buildSafeAccount(owner: Address) {
  * signTypedData opens the browser for MetaMask to sign EIP-712 data.
  * Used by deploy, create-session, revoke — every owner operation goes through MetaMask.
  */
-export async function buildSignableSafeAccount(owner: Address) {
+export async function buildSignableSafeAccount(owner: Address, sessionMeta?: SessionMeta) {
   const safeOwner = toAccount({
     address: owner,
     async signMessage() { throw new Error("Use signTypedData"); },
@@ -325,6 +326,7 @@ export async function buildSignableSafeAccount(owner: Address) {
         typedData,
         chainId: chain.id,
         chainName: chain.name,
+        sessionMeta,
       });
       return result.signature!;
     },
@@ -378,6 +380,7 @@ export const UNISWAP_V3_ROUTER_ABI = [{
 
 export const AAVE_POOL_ABI = [
   { inputs: [{ name: "asset", type: "address" }, { name: "amount", type: "uint256" }, { name: "onBehalfOf", type: "address" }, { name: "referralCode", type: "uint16" }], name: "supply", outputs: [], stateMutability: "nonpayable", type: "function" },
+  { inputs: [{ name: "asset", type: "address" }, { name: "amount", type: "uint256" }, { name: "to", type: "address" }], name: "withdraw", outputs: [{ name: "", type: "uint256" }], stateMutability: "nonpayable", type: "function" },
 ] as const;
 
 const SEL = {
@@ -385,6 +388,7 @@ const SEL = {
   TRANSFER: "0xa9059cbb" as Hex,
   EXACT_INPUT_SINGLE: "0x04e45aaf" as Hex,
   SUPPLY: "0x617ba037" as Hex,
+  WITHDRAW: "0x69328dec" as Hex,
 };
 
 export interface ExecuteParams { amount: bigint; smartAccount: Address; recipient?: Address; }
@@ -453,6 +457,16 @@ export const PRESETS: Record<string, ProtocolPreset> = {
       { label: "Supply to Aave", to: AAVE_POOL, abi: AAVE_POOL_ABI, functionName: "supply", buildArgs: (p) => [USDC, p.amount, p.smartAccount, 0] },
     ],
   },
+  "aave-withdraw": {
+    name: "Aave V3 Withdraw", description: "Withdraw USDC from Aave V3 (Base)", chainId: 8453,
+    actions: [
+      { label: "withdraw", address: AAVE_POOL, selector: SEL.WITHDRAW },
+    ],
+    spendToken: TOKENS.USDC,
+    execute: [
+      { label: "Withdraw from Aave", to: AAVE_POOL, abi: AAVE_POOL_ABI, functionName: "withdraw", buildArgs: (p) => [USDC, p.amount, p.smartAccount] },
+    ],
+  },
 };
 
 export function listPresets(): string {
@@ -475,6 +489,13 @@ import { exec } from "child_process";
 import { randomBytes } from "crypto";
 import type { Address, Hex } from "viem";
 
+export interface SessionMeta {
+  limitAmount: string;   // e.g. "1"
+  limitToken: string;    // e.g. "USDC"
+  durationHours: string; // e.g. "48"
+  expiresAt: number;     // unix timestamp
+}
+
 export interface SignRequest {
   title: string;
   description: string;
@@ -483,6 +504,7 @@ export interface SignRequest {
   chainId: number;
   chainName: string;
   connectOnly?: boolean;
+  sessionMeta?: SessionMeta;
 }
 
 export interface SignResult {
@@ -554,6 +576,7 @@ button{padding:14px 28px;font-size:16px;font-weight:600;cursor:pointer;border:no
 import{createWalletClient,custom}from'https://esm.sh/viem@2.23.0';
 import{base,baseSepolia}from'https://esm.sh/viem@2.23.0/chains';
 const TX=${txJson},TYPED_DATA=${typedDataJson},CONNECT_ONLY=${connectOnly},NONCE='${nonce}',CHAINS={8453:base,84532:baseSepolia},chain=CHAINS[${req.chainId}]||base;
+const SESSION_META=${req.sessionMeta ? JSON.stringify(req.sessionMeta) : 'null'};
 let wc,account;
 
 // ── Session calldata decoder ──────────────────────────────────────
@@ -599,8 +622,16 @@ let wc,account;
     }else{html+='<li>'+f.charAt(0).toUpperCase()+f.slice(1)+'</li>';}
   }
   html+='</ul>';
-  if(hasLimit)html+='<p>✓ On-chain spending limit enforced</p>';
-  html+='<p>✓ Time-limited session (on-chain enforced)</p>';
+  if(hasLimit){
+    if(SESSION_META)html+='<p>✓ Spending limit: '+SESSION_META.limitAmount+' '+SESSION_META.limitToken+' (on-chain enforced)</p>';
+    else html+='<p>✓ On-chain spending limit enforced</p>';
+  }
+  if(SESSION_META){
+    const exp=new Date(SESSION_META.expiresAt*1000).toLocaleDateString(undefined,{month:'long',day:'numeric',year:'numeric'});
+    html+='<p>✓ Duration: '+SESSION_META.durationHours+'h — expires '+exp+' (on-chain enforced)</p>';
+  }else{
+    html+='<p>✓ Time-limited session (on-chain enforced)</p>';
+  }
   html+='<p class="note">MetaMask will show raw hex calldata — this is normal. The above is what you are actually approving.</p>';
   el.className='decoded';el.style.display='block';el.innerHTML=html;
 })();
@@ -827,8 +858,13 @@ async function main() {
   console.log("Enabling session on-chain...");
   console.log("MetaMask will open in your browser to sign.\n");
 
-  // Build Safe with browser-signing owner
-  const safeAccount = await buildSignableSafeAccount(w.owner);
+  // Build Safe with browser-signing owner — pass session metadata for browser UI
+  const safeAccount = await buildSignableSafeAccount(w.owner, {
+    limitAmount: limitStr,
+    limitToken: preset.spendToken.symbol,
+    durationHours: durationStr,
+    expiresAt: validUntil,
+  });
 
   const pimlicoClient = createPimlicoClient({
     transport: http(bundlerUrl),
