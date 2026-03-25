@@ -1,0 +1,26 @@
+{
+  "name": "agent-wallet",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "setup": "tsx src/setup.ts",
+    "deploy": "tsx src/deploy.ts",
+    "create-session": "tsx src/create-session.ts",
+    "execute": "tsx src/execute.ts",
+    "balance": "tsx src/balance.ts",
+    "revoke": "tsx src/revoke.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.11",
+    "@rhinestone/sdk": "^1.3.0",
+    "dotenv": "^16.6.1",
+    "hono": "^4.12.9",
+    "permissionless": "0.3.4",
+    "viem": "2.47.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

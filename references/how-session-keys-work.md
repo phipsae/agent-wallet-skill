@@ -86,6 +86,6 @@ Even if the pre-flight check had a bug:
 
 ## Revocation
 
-The human runs `pnpm run revoke`. This sends a single transaction from the human's EOA to the smart account, which removes the session. The agent's session key becomes useless — it still exists locally, but the smart contract will reject every transaction signed with it.
+The human runs `cd .agent-wallet && pnpm run revoke`. This sends a single transaction from the human's EOA to the smart account, which removes the session. The agent's session key becomes useless — it still exists locally, but the smart contract will reject every transaction signed with it.
 
 The smart account address doesn't change. Funds don't move. The human can issue a new session key immediately if they want.

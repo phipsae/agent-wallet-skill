@@ -1,0 +1,5 @@
+.env
+.wallet.json
+.session.json
+node_modules/
+dist/
