@@ -1,6 +1,6 @@
 ---
 name: agent-wallet
-description: Give an AI agent a scoped Ethereum wallet. Creates a Safe smart account owned by the user's browser wallet, then creates session keys on demand when the agent needs to transact.
+description: Give an AI agent a scoped Ethereum wallet. Creates a ZeroDev Kernel smart account owned by the user's browser wallet, then grants scoped session keys only when the agent needs to transact.
 ---
 
 # Agent Wallet
@@ -9,168 +9,153 @@ description: Give an AI agent a scoped Ethereum wallet. Creates a Safe smart acc
 
 This skill has two phases:
 
-**Phase 1 — Wallet creation** (user explicitly asks):
+**Phase 1 - Wallet creation** (user explicitly asks):
 - "Give my agent a wallet"
 - "Set up an agent wallet"
 - "Create a wallet for on-chain access"
 
-→ Bootstrap `.agent-wallet/`, connect the browser wallet, deploy the Safe. The user's EOA becomes the sole owner.
+Bootstrap `.agent-wallet/`, connect the browser wallet, and deploy a ZeroDev Kernel smart account. The user's EOA is the owner key.
 
-**Phase 2 — On-chain actions** (after wallet exists):
+**Phase 2 - On-chain actions** (after wallet exists):
 
-Request-to-intent mapping:
+Permission intent (grant only, never execute):
+- "allow", "grant", "permit", "give permission", "set limit", "create session key", "authorize" -> create a session for the matching preset, then stop.
+- Example: "Allow agent to swap up to 50 USDC" -> grants `uniswap-swap` with a 50 USDC per-transaction cap, then stops.
 
-Permission (session creation only — does NOT execute):
-- "allow", "grant", "permit", "give permission", "set limit", "create session key", "authorize" → create a session for the matching preset, then **STOP**
-- Example: "Allow agent to swap up to 50 USDC" → creates `uniswap-swap` session with 50 USDC limit, stops
+Execution intent (uses an existing session, never creates one silently):
+- "swap", "trade", "exchange", "buy WETH", "sell USDC" -> `uniswap-swap`
+- "send <TOKEN>", "transfer <TOKEN> to" -> `transfer:<TOKEN>` (for example `transfer:USDC`)
+- "supply", "deposit", "yield", "earn", "lend", "supply to aave" -> `aave-supply`
+- "withdraw", "withdraw from aave", "redeem", "remove from aave", "pull out" -> `aave-withdraw`
 
-Execution (uses existing session — never creates one silently):
-- "swap", "trade", "exchange", "buy WETH", "sell USDC" → `uniswap-swap`
-- "send <TOKEN>", "transfer <TOKEN> to" → `transfer:<TOKEN>` (for example `transfer:USDC`)
-- "supply", "deposit", "yield", "earn", "lend", "supply to aave" → `aave-supply`
-- "withdraw", "withdraw from aave", "redeem", "remove from aave", "pull out" → `aave-withdraw`
+Info: "check balance", "how much", "what's in my wallet" -> `status` or `balance`
+Revoke: "revoke", "remove access", "disable session" -> revocation
 
-Info: "check balance", "how much", "what's in my wallet" → balance check
-Revoke: "revoke", "remove access", "disable session" → revocation
+Critical rule: creating a session key grants permission only. It must never trigger execution. Execution requires a separate explicit user intent or confirmation.
 
-**Critical rule: Creating a session key grants an allowance — it does NOT trigger execution. The agent must never auto-execute after session creation. Execution requires a separate, explicit user intent or confirmation.**
-
-Do NOT activate for questions about how wallets work or research — answer those from knowledge.
+Do not activate for general wallet research questions; answer those from knowledge.
 
 ## How it works
 
 ```text
-User's browser wallet (sole owner, signs via browser)
-  └── Safe smart account (fresh per setup, unique salt)
-        └── Session keys (scoped, time-limited, agent uses these)
+User's browser wallet (owner, signs via browser)
+  -> ZeroDev Kernel smart account on Base
+      -> Session keys in .agent-wallet/.session.json
 ```
 
-- **Safe** = smart contract wallet on Base, owned by the user's browser wallet. A fresh Safe is created each time the skill runs (unique salt per setup).
-- **Session key** = temporary key for the agent. Can only call specific contracts/functions for a limited time. Enforced on-chain by Rhinestone Smart Sessions (ERC-7579).
-- **Browser wallet signs** deploy, session creation, revocation. The agent never has owner access.
+- **Kernel smart account**: a smart account on Base owned by the user's browser wallet.
+- **Session key**: a temporary agent-held key restricted by ZeroDev permission policies.
+- **Browser wallet signs** setup, deploy, grant, and revoke operations. The agent never receives the owner private key.
 
-The repo stays skill-first. Tracked helper files live in `references/scripts/` and are copied into a hidden `.agent-wallet/` workspace during bootstrap. The user never manages those files directly.
+Policy guarantees in this version:
+- contract and function allowlist by preset
+- session expiry via timestamp policy
+- per-transaction token amount cap for configured token actions
+- spender lock for approval actions
+- Uniswap route lock for USDC -> WETH, 0.05% fee tier, smart-account recipient, nonzero minimum output, and zero price limit
+- transfer recipient lock when `transfer:<TOKEN>` is granted with `--to`
+- USDC/account locks for Aave actions
 
-Data separation:
-- `.agent-wallet/.wallet.json` — owner address + Safe address
-- `.agent-wallet/.session.json` — session keys + permissions (one entry per preset)
+Do not describe `--limit` as a cumulative lifetime spending cap. It is a per-transaction policy cap in this runtime.
+
+Runtime state:
+- `.agent-wallet/.wallet.json` - owner address, smart account address, chain id
+- `.agent-wallet/.session.json` - session private keys and scoped permission data, one entry per preset
 
 ## Phase 1: Wallet creation
 
-When the user asks to give the agent a wallet, follow these steps. Run commands yourself — never tell the user to run them. Only pause when marked **PAUSE**.
+When the user asks to give the agent a wallet, run commands yourself. Only pause where marked **PAUSE**.
 
-1. If `.agent-wallet/node_modules/` does not exist → run BOOTSTRAP (section below)
-2. Run: `cd .agent-wallet && pnpm run setup`
-   **PAUSE**: user connects their browser wallet in the browser. This registers their EOA as sole owner.
-3. Tell the user the Safe address. Ask them to send ~0.0001 ETH for deployment gas.
-   **PAUSE**: wait for user to confirm they sent ETH.
-4. Run: `cd .agent-wallet && pnpm run balance` to verify ETH arrived.
-5. Run: `cd .agent-wallet && pnpm run deploy`
-   - If output says "Safe already deployed" → skip straight to step 6
-   - Otherwise → **PAUSE**: user signs in the browser wallet. Safe is now deployed with their EOA as sole owner.
-6. Done. Tell the user: "Your agent has a wallet. When you ask me to do something on-chain, I'll request the permissions I need."
+1. If `.agent-wallet/node_modules/` does not exist, run Bootstrap below.
+2. Run `cd .agent-wallet && pnpm run setup`.
+   **PAUSE**: user connects their browser wallet in the browser.
+3. Tell the user the smart account address. Ask them to send enough ETH on Base for deployment gas.
+   **PAUSE**: wait for user confirmation.
+4. Run `cd .agent-wallet && pnpm run balance` to verify ETH arrived.
+5. Run `cd .agent-wallet && pnpm run deploy`.
+   **PAUSE**: user signs in the browser wallet if deployment is needed.
+6. Run `cd .agent-wallet && pnpm run status` and report the account address and deployed state.
 
 ## Phase 2: On-chain actions
 
-When the user asks to do something on-chain (and the wallet already exists), follow this flow. Run commands yourself — never tell the user to run them. Only pause when marked **PAUSE**.
+Always run `cd .agent-wallet && pnpm run status` first if current wallet/session state is unclear.
 
-```text
-User request
-     │
-     ▼
-Does .agent-wallet/.wallet.json exist?
-  NO → "I don't have a wallet yet. Say 'give my agent a wallet' to set one up." Done.
-  YES ↓
+### A) Permission intent
 
-Classify intent:
-  A) PERMISSION — "allow agent 50 USDC for swaps", "grant permission", "set limit"
-  B) EXECUTE   — "swap 10 USDC for WETH", "send 5 USDC to 0x..."
-  C) INFO      — "check balance"
-  D) REVOKE    — "revoke access"
+1. Match the request to a preset. If no match, run `cd .agent-wallet && pnpm run grant -- --list` and ask which preset they want.
+2. Ask for duration if missing; default to 24h.
+3. Ask for limit if missing; there is no default.
+4. For `transfer:<TOKEN>`, require the recipient before grant.
+5. Explain before signing:
+   - preset and actions
+   - allowed contracts/functions
+   - per-transaction token cap
+   - duration and expiry
+   - recipient lock for transfer sessions
+6. After explicit confirmation, run:
+
+```bash
+cd .agent-wallet && pnpm run grant -- --preset <name> --duration <hours> --limit <amount>
 ```
 
-### A) PERMISSION intent (session creation — does NOT execute)
+For transfers:
 
-```text
-Match request to preset
-  NO MATCH → show available presets, ask what they want
-  MATCH ↓
-
-Ask duration if not specified (default: 24h)
-Ask spending limit if not specified (required — no default)
-PAUSE: show the user what they are granting before creating:
-  - Preset name and description
-  - Allowed contracts and functions
-  - Spending limit (on-chain enforced via SpendingLimitsPolicy)
-  - Duration and expiry time
-Wait for user confirmation, then:
-run: cd .agent-wallet && pnpm run create-session -- --preset <name> --duration <hours> --limit <amount>
-PAUSE: user signs in the browser wallet to grant permission.
-(This adds/replaces the entry for this preset in .session.json — other sessions are preserved.)
-
-Report what was created. STOP. Do NOT execute anything.
-Tell the user: "Session active. You can now ask me to [swap/supply/send] within this limit."
-Done.
+```bash
+cd .agent-wallet && pnpm run grant -- --preset transfer:<TOKEN> --to <address> --duration <hours> --limit <amount>
 ```
 
-### B) EXECUTE intent (uses existing session)
+**PAUSE**: user signs in the browser wallet to grant permission.
 
-```text
-Match request to preset
-  NO MATCH → show available presets, ask what they want
-  MATCH ↓
+Report what was created and stop. Do not execute anything.
 
-.agent-wallet/.session.json has an entry for the matching preset AND expiresAt > now?
-  NO → "I don't have permission to do that yet."
-       Offer to create a session: "Want me to create a session key for [preset]?
-       I'll need your browser wallet signature to grant [limit] [token] for [duration]."
-       PAUSE: wait for user response.
-         User says no → Done.
-         User says yes → follow PERMISSION flow above.
-                         After session creation → STOP.
-                         Ask: "Session created. Ready to execute [the original request]. Shall I proceed?"
-                         PAUSE: wait for explicit confirmation.
-                           User says no → Done.
-                           User says yes → continue below ↓
-  YES ↓
+### B) Execution intent
 
-Does the Safe have enough tokens? (run balance to check)
-  NO → PAUSE: tell the user to send tokens to the Safe address, verify with balance
-  YES ↓
+1. Match the request to a preset.
+2. If `.session.json` has no matching unexpired session, offer to create one via the Permission flow. After grant, stop and ask for a separate execution confirmation.
+3. Run `cd .agent-wallet && pnpm run balance`.
+4. If funds are insufficient, tell the user to fund the smart account and verify again.
+5. For `uniswap-swap`, require a user-approved minimum WETH output and pass it as `--min-out`; never run swaps with a dust minimum.
+6. For amounts over 50 USDC, pause for explicit confirmation and pass `--confirmed-high-value`.
+7. Execute:
 
-Amount > 50 USDC?
-  YES → PAUSE: confirm with the user before executing
-  NO ↓
-
-run: cd .agent-wallet && pnpm run execute -- --preset <name> --amount <N> [--to <address> for transfers]
-Show transaction hash. Done.
+```bash
+cd .agent-wallet && pnpm run execute -- --preset <name> --amount <N>
 ```
 
-### C) INFO intent
+For swaps:
 
-```text
-run: cd .agent-wallet && pnpm run balance
-Show results. Done.
+```bash
+cd .agent-wallet && pnpm run execute -- --preset uniswap-swap --amount <USDC> --min-out <WETH>
 ```
 
-### D) REVOKE intent
+For high-value USDC actions:
 
-```text
-run: cd .agent-wallet && pnpm run revoke [-- --preset <name> to revoke a specific session, or omit to revoke all]
-PAUSE: user signs in the browser wallet.
-Done.
+```bash
+cd .agent-wallet && pnpm run execute -- --preset <name> --amount <N> --confirmed-high-value
 ```
 
-**Session handling:**
-- If `.session.json` exists but the preset does not match → create a new session (adds an entry for that preset; other sessions are preserved)
-- If the session expired → create a new session and tell the user the old one expired
-- To revoke: `cd .agent-wallet && pnpm run revoke`
+Show transaction hashes when done.
+
+### C) Info intent
+
+```bash
+cd .agent-wallet && pnpm run status
+```
+
+Use `pnpm run balance` for balances only.
+
+### D) Revoke intent
+
+```bash
+cd .agent-wallet && pnpm run revoke
+cd .agent-wallet && pnpm run revoke -- --preset <name>
+```
+
+**PAUSE**: user signs in the browser wallet.
 
 ## Bootstrap
 
-When `.agent-wallet/` does not exist, create it automatically. Do all of this without asking — only pause for the bundler URL.
-
-1. Create the hidden workspace and copy the tracked helper files:
+When `.agent-wallet/` does not exist, create it automatically. Do not ask except for the bundler URL.
 
 ```bash
 mkdir -p .agent-wallet/src
@@ -180,66 +165,59 @@ cp references/scripts/.gitignore .agent-wallet/.gitignore
 cp references/scripts/src/*.ts .agent-wallet/src/
 ```
 
-2. Write `.agent-wallet/.env`:
+Write `.agent-wallet/.env`:
 
 ```text
 BUNDLER_URL=
 CHAIN=base
 ```
 
-3. Install dependencies:
+Run:
 
 ```bash
 cd .agent-wallet && pnpm install
 ```
 
-4. **PAUSE**: Ask which bundler provider they want:
+**PAUSE**: ask for a Base ERC-4337 bundler URL. Pimlico-compatible gas pricing is used when available, with public RPC fee estimation as a fallback. Suggested providers:
 
-| Provider | Free tier | Sign up |
-|----------|-----------|---------|
-| **Pimlico** | Yes | https://dashboard.pimlico.io |
-| **Alchemy** | Yes | https://dashboard.alchemy.com |
-| **Coinbase** | Yes (Base) | https://portal.cdp.coinbase.com |
+| Provider | Sign up |
+|----------|---------|
+| Pimlico | https://dashboard.pimlico.io |
+| Alchemy | https://dashboard.alchemy.com |
+| Coinbase | https://portal.cdp.coinbase.com |
 
-Wait for them to paste the URL. Write it to `.agent-wallet/.env` as `BUNDLER_URL=<url>`.
+Write the pasted URL to `.agent-wallet/.env` as `BUNDLER_URL=<url>`, then continue with setup.
 
-5. Continue with the decision flow (next step: setup).
+## Runtime commands
 
-## Tracked helper files
+The generated workspace exposes:
+- `pnpm run wallet -- <command>` for the single dispatcher
+- `pnpm run setup`
+- `pnpm run deploy`
+- `pnpm run status`
+- `pnpm run balance`
+- `pnpm run grant`
+- `pnpm run create-session` (compatibility alias for `grant`)
+- `pnpm run execute`
+- `pnpm run revoke`
 
-These files are the bootstrap source of truth for `.agent-wallet/`:
-
-- `references/scripts/package.json`
-- `references/scripts/tsconfig.json`
-- `references/scripts/.gitignore`
-- `references/scripts/src/config.ts`
-- `references/scripts/src/account.ts`
-- `references/scripts/src/presets.ts`
-- `references/scripts/src/browser-signer.ts`
-- `references/scripts/src/setup.ts`
-- `references/scripts/src/deploy.ts`
-- `references/scripts/src/create-session.ts`
-- `references/scripts/src/execute.ts`
-- `references/scripts/src/balance.ts`
-- `references/scripts/src/revoke.ts`
-
-Do not modify the copied `.agent-wallet/src` files manually unless the user explicitly asks. Update the tracked source files in `references/scripts/` instead.
+Update tracked files in `references/scripts/`, not copied files in `.agent-wallet/`.
 
 ## Safety rules
 
-1. **Never ask the user for their private key.** The browser wallet signs everything.
-2. **Always run balance before transacting.**
-3. **Warn on amounts over 50 USDC.** Confirm before executing.
-4. **Session keys expire on-chain** (TimeFramePolicy). Create a new one when expired.
-5. **Never send funds to an unverified address.** The Safe address is shown during setup.
-6. **The agent reads `.session.json` and the owner address from `.wallet.json`.** The owner address is public and needed by the SDK to reconstruct the account object. The agent has no owner signing capability.
-7. **Real spending limits.** `--limit` sets an on-chain cumulative spending cap via Rhinestone's `SpendingLimitsPolicy` on the approve action. Always set a limit. Default recommendation: 100 USDC for first sessions.
+1. Never ask for a private key.
+2. Never create a session and execute in the same step.
+3. Always run balance or status before executing.
+4. Always require `--min-out` for swaps.
+5. Always lock transfer sessions to a recipient at grant time.
+6. Confirm amounts over 50 USDC before execution.
+7. Treat `.session.json` as sensitive; it contains session private keys.
 
-## Presets reference
+## Presets
 
-| Preset | What it does | Spend token | Chain |
-|--------|-------------|-------------|-------|
+| Preset | What it does | Token | Chain |
+|--------|--------------|-------|-------|
 | `uniswap-swap` | Swap USDC -> WETH on Uniswap V3 | USDC | Base |
-| `aave-supply` | Supply USDC to Aave V3 for yield | USDC | Base |
+| `aave-supply` | Supply USDC to Aave V3 | USDC | Base |
 | `aave-withdraw` | Withdraw USDC from Aave V3 | USDC | Base |
-| `transfer:<TOKEN>` | Send a supported ERC-20 token | matching token | Base |
+| `transfer:<TOKEN>` | Send a supported ERC-20 to a locked recipient | matching token | Base |

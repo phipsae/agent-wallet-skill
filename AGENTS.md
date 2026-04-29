@@ -23,7 +23,7 @@ pnpm run balance
 pnpm run revoke
 ```
 
-`pnpm install` installs template dependencies. `pnpm exec tsc --noEmit` type-checks strict TypeScript sources. The `pnpm run ...` commands execute the same flows used after templates are copied into `.agent-wallet/`; they require `.env` values such as `BUNDLER_URL` and should usually be tested on Base Sepolia first.
+`pnpm install` installs template dependencies. `pnpm exec tsc --noEmit` type-checks strict TypeScript sources. The `pnpm run ...` commands execute the same flows used after templates are copied into `.agent-wallet/`; commands that submit user operations require `.env` values such as `BUNDLER_URL`. The bundled DeFi presets are Base mainnet-only; use tiny amounts for smoke tests unless Base Sepolia preset addresses are added.
 
 ## Coding Style & Naming Conventions
 
@@ -33,7 +33,7 @@ Update `SKILL.md` and `references/scripts/` together when changing runtime behav
 
 ## Testing Guidelines
 
-There is no committed test runner yet. For every change, run `pnpm exec tsc --noEmit` in `references/scripts/`. For behavior changes, smoke test the affected command on Base Sepolia when possible and record the result in the pull request. If adding tests, colocate them near the relevant helper and add a `pnpm test` script.
+There is no committed test runner yet. For every change, run `pnpm exec tsc --noEmit` in `references/scripts/`. For behavior changes, smoke test the affected command with minimal value on Base mainnet when possible and record the result in the pull request. If adding testnet preset addresses, document the chain-specific addresses and then prefer Base Sepolia smoke tests. If adding tests, colocate them near the relevant helper and add a `pnpm test` script.
 
 ## Commit & Pull Request Guidelines
 

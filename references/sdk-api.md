@@ -1,53 +1,61 @@
 # Runtime Template Reference
 
-This repository does not ship a root-level SDK or CLI. The tracked runtime templates live in `references/scripts/` and are copied into `.agent-wallet/` during skill bootstrap.
+The tracked runtime templates live in `references/scripts/` and are copied into `.agent-wallet/` during skill bootstrap.
 
-## Tracked files
+## Commands
 
-- `references/scripts/package.json`
-- `references/scripts/tsconfig.json`
-- `references/scripts/.gitignore`
-- `references/scripts/src/config.ts`
-- `references/scripts/src/account.ts`
-- `references/scripts/src/presets.ts`
-- `references/scripts/src/browser-signer.ts`
-- `references/scripts/src/setup.ts`
-- `references/scripts/src/deploy.ts`
-- `references/scripts/src/create-session.ts`
-- `references/scripts/src/execute.ts`
-- `references/scripts/src/balance.ts`
-- `references/scripts/src/revoke.ts`
+The generated workspace exposes a single dispatcher:
 
-## Resulting commands in `.agent-wallet/`
+```bash
+cd .agent-wallet && pnpm run wallet -- <command> [options]
+```
 
-After bootstrap, the generated hidden workspace exposes:
+Aliases are also available:
 
 - `pnpm run setup`
 - `pnpm run deploy`
-- `pnpm run create-session`
-- `pnpm run execute`
+- `pnpm run status`
 - `pnpm run balance`
+- `pnpm run grant`
+- `pnpm run create-session` (alias for `grant`)
+- `pnpm run execute`
 - `pnpm run revoke`
 
-## Session creation
-
-Single-session flow:
-
-```bash
-cd .agent-wallet && pnpm run create-session -- --preset uniswap-swap --duration 24 --limit 100
-```
+## Grant
 
 List presets:
 
 ```bash
-cd .agent-wallet && pnpm run create-session -- --list
+cd .agent-wallet && pnpm run grant -- --list
 ```
 
-## Execution
-
-Examples:
+Grant swap permission:
 
 ```bash
-cd .agent-wallet && pnpm run execute -- --amount 10
-cd .agent-wallet && pnpm run execute -- --amount 5 --to 0x...
+cd .agent-wallet && pnpm run grant -- --preset uniswap-swap --duration 24 --limit 100
 ```
+
+Grant transfer permission with a locked recipient:
+
+```bash
+cd .agent-wallet && pnpm run grant -- --preset transfer:USDC --to 0x... --duration 24 --limit 25
+```
+
+`--limit` is a per-transaction token cap in the current ZeroDev permissions runtime.
+For `uniswap-swap`, the policy also locks the route to Base USDC -> WETH through the 0.05% fee tier and the smart-account recipient.
+
+## Execute
+
+Swap execution requires a minimum WETH output:
+
+```bash
+cd .agent-wallet && pnpm run execute -- --preset uniswap-swap --amount 10 --min-out 0.002
+```
+
+Transfers use the recipient saved when the session was granted:
+
+```bash
+cd .agent-wallet && pnpm run execute -- --preset transfer:USDC --amount 5
+```
+
+For USDC amounts over 50, pass `--confirmed-high-value` only after explicit user confirmation.
