@@ -6,6 +6,7 @@ A skill-first repository that gives an AI agent a scoped Ethereum wallet. The ru
 
 - `SKILL.md` is the product. It contains activation rules and the wallet, grant, execution, status, and revoke flows.
 - `references/` contains background material and troubleshooting notes.
+- `references/adding-a-preset.md` walks through `aave-supply` as a template for new presets and documents the gaps (no native ETH, no `msg.value`).
 - `references/scripts/` contains the tracked runtime templates copied into `.agent-wallet/` during bootstrap.
 
 The repo is not a root-level app. The executable runtime lives in the hidden `.agent-wallet/` workspace created by the skill.
